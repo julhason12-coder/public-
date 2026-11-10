@@ -20,12 +20,27 @@ mongoose.connect(MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected Successfully!'))
   .catch(err => console.log('❌ DB Connection Failed: ', err));
 
-// ইউজার স্কিমা
+// ইউজার স্কিমা - ব্যালেন্স, টার্নওভার ও উইথড্রল পাসওয়ার্ড সহ
 const UserSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
-  password: { type: String, required: true }
+  password: { type: String, required: true },
+  balance: { type: Number, default: 10 }, // নতুনদের ১০ টাকা ফ্রি বোনাস
+  totalDeposited: { type: Number, default: 0 },
+  turnoverRequired: { type: Number, default: 0 },
+  turnoverProgress: { type: Number, default: 0 },
+  withdrawPassword: { type: String, default: null }
 });
 const User = mongoose.model('User', UserSchema);
+
+// ট্রানজেকশন হিস্ট্রি স্কিমা
+const TransactionSchema = new mongoose.Schema({
+  username: { type: String, required: true },
+  type: { type: String, enum: ['DEPOSIT', 'WITHDRAW', 'BET', 'BONUS'], required: true },
+  amount: { type: Number, required: true },
+  status: { type: String, default: 'SUCCESS' },
+  createdAt: { type: Date, default: Date.now }
+});
+const Transaction = mongoose.model('Transaction', TransactionSchema);
 
 // পার্মানেন্ট গেম হিস্ট্রি ডাটাবেস স্কিমা
 const HistorySchema = new mongoose.Schema({
@@ -36,7 +51,130 @@ const GameHistory = mongoose.model('GameHistory', HistorySchema);
 
 app.get('/', (req, res) => res.send('Server is Running'));
 
-// --- হিস্ট্রি এপিআই (যাতে অ্যাপ থেকে ব্যাক দিয়ে আবার ঢুকলে সাথে সাথে হিস্ট্রি পাওয়া যায়) ---
+// --- ইউজার ব্যালেন্স ও ট্রানজেকশন এপিআই ---
+
+// প্রোফাইল ও ব্যালেন্স চেক
+app.post('/api/profile', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: "User not found!" });
+    
+    res.status(200).json({
+      success: true,
+      balance: user.balance,
+      totalDeposited: user.totalDeposited,
+      turnoverRequired: user.turnoverRequired,
+      turnoverProgress: user.turnoverProgress,
+      hasWithdrawPassword: !!user.withdrawPassword
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ডিপোজিট রিকোয়েস্ট
+app.post('/api/deposit', async (req, res) => {
+  try {
+    const { username, amount } = req.body;
+    const depositAmount = parseFloat(amount);
+    if (!username || isNaN(depositAmount) || depositAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid amount!" });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: "User not found!" });
+
+    user.balance += depositAmount;
+    user.totalDeposited += depositAmount;
+    user.turnoverRequired += depositAmount; 
+    await user.save();
+
+    await Transaction.create({ username, type: 'DEPOSIT', amount: depositAmount });
+
+    res.status(200).json({ success: true, message: "Deposit successful!", balance: user.balance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// উত্তোলনের পাসওয়ার্ড সেট করা
+app.post('/api/set-withdraw-password', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, message: "Missing fields!" });
+    }
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: "User not found!" });
+
+    user.withdrawPassword = password;
+    await user.save();
+    res.status(200).json({ success: true, message: "Withdraw password set successfully!" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// উত্তোলন রিকোয়েস্ট (টার্নওভার ও পাসওয়ার্ড ভ্যালিডেশন সহ)
+app.post('/api/withdraw', async (req, res) => {
+  try {
+    const { username, amount, withdrawPassword } = req.body;
+    const withdrawAmount = parseFloat(amount);
+
+    if (!username || isNaN(withdrawAmount) || withdrawAmount <= 0 || !withdrawPassword) {
+      return res.status(400).json({ success: false, message: "Invalid request!" });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: "User not found!" });
+
+    if (user.withdrawPassword !== withdrawPassword) {
+      return res.status(400).json({ success: false, message: "Incorrect withdrawal password!" });
+    }
+
+    if (user.balance < withdrawAmount) {
+      return res.status(400).json({ success: false, message: "Insufficient balance!" });
+    }
+
+    if (user.totalDeposited < 100) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "শর্ত পূরণ হয়নি! উত্তোলন করতে আগে ১০০ থেকে ৫০০ টাকা ডিপোজিট করুন।" 
+      });
+    }
+
+    if (user.turnoverProgress < user.turnoverRequired) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "টার্নওভার বাকি আছে! রিকোয়েয়ারমেন্ট সম্পূর্ণ করে উত্তোলন করুন।" 
+      });
+    }
+
+    user.balance -= withdrawAmount;
+    await user.save();
+
+    await Transaction.create({ username, type: 'WITHDRAW', amount: withdrawAmount });
+
+    res.status(200).json({ success: true, message: "Withdrawal request submitted successfully!" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ট্রানজেকশন হিস্ট্রি দেখার এন্ডপয়েন্ট
+app.post('/api/transactions', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const transactions = await Transaction.find({ username }).sort({ createdAt: -1 }).limit(20);
+    res.status(200).json({ success: true, transactions });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- গেম হিস্ট্রি ও অথেনটিকেশন এপিআই ---
+
 app.get('/api/history', async (req, res) => {
   try {
     const histories = await GameHistory.find().sort({ createdAt: -1 }).limit(15);
@@ -47,7 +185,6 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
-// রেজিস্ট্রেশন এপিআই
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -60,15 +197,17 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: "User already exists!" });
     }
 
-    const newUser = new User({ username, password });
+    const newUser = new User({ username, password, balance: 10, totalDeposited: 0 });
     await newUser.save();
-    res.status(201).json({ success: true, message: "Registered successfully!" });
+    
+    await Transaction.create({ username, type: 'BONUS', amount: 10 });
+
+    res.status(201).json({ success: true, message: "Registered successfully with 10 BDT bonus!" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// লগইন এপিআই
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -87,49 +226,34 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- গেম লুপ ভেরিয়েবল ---
-let gameState = "WAITING"; // WAITING, RUNNING, CRASHED
+// --- গেম লুপ ---
+let gameState = "WAITING";
 let multiplier = 1.00;
 let countdown = 5;
 let roundStartTime = Date.now();
-
-// --- নিখুঁত শাফলিং লজিক (১২টি ১x এবং ৮টি ২x-১৫x মিক্সড) ---
 let crashPool = [];
 
 function generateCrashPoint() {
   if (crashPool.length === 0) {
     let pool = [];
-    
-    // ঠিক ১২টি রাউন্ড একদম ১.০০x (এক গুণের মধ্যে) ফাটবে
-    for (let i = 0; i < 12; i++) {
-      pool.push(1.00);
-    }
-    
-    // বাকি ৮টি রাউন্ড ২x থেকে ১৫x এর মধ্যে এলোমেলোভাবে থাকবে
+    for (let i = 0; i < 12; i++) pool.push(1.00);
     for (let i = 0; i < 8; i++) {
-      const val = parseFloat((Math.random() * (15.00 - 2.00) + 2.00).toFixed(2));
-      pool.push(val);
+      pool.push(parseFloat((Math.random() * (15.00 - 2.00) + 2.00).toFixed(2)));
     }
-    
-    // Fisher-Yates Shuffle দিয়ে সম্পূর্ণ এলোমেলো করা হলো যাতে কোনো প্যাটার্ন বোঝা না যায়
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
     }
-    
     crashPool = pool;
   }
-  
   return crashPool.shift();
 }
 
-// ডাটাবেস থেকে সাম্প্রতিক হিস্ট্রি ফেচ করার ফাংশন
 async function getRecentHistory() {
   try {
     const histories = await GameHistory.find().sort({ createdAt: -1 }).limit(15);
     return histories.map(h => h.multiplier);
   } catch (err) {
-    console.error("History fetch error:", err);
     return [];
   }
 }
@@ -164,11 +288,9 @@ function runFlight() {
   const flightInterval = setInterval(async () => {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
     
-    // যদি ক্র্যাশ পয়েন্ট ১.০০x হয়, তবে বিমান শুরু হতেই সাথে সাথে ফাটবে
     if (crashPoint === 1.00) {
       multiplier = 1.00;
     } else {
-      // অন্যথায় স্বাভাবিক ও স্মুথ গতিতে উপরে উঠতে থাকবে
       if (elapsedSeconds <= 2) {
         multiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
       } else {
@@ -181,12 +303,9 @@ function runFlight() {
       clearInterval(flightInterval);
       gameState = "CRASHED";
 
-      // ডাটাবেসে নতুন ক্র্যাশ পয়েন্ট পার্মানেন্টলি সেভ করা হলো
       try {
         await GameHistory.create({ multiplier });
-      } catch (err) {
-        console.error("History save error:", err);
-      }
+      } catch (err) {}
 
       const history = await getRecentHistory();
       io.emit("game_crash", { gameState, multiplier, crashPoint, history });
@@ -202,7 +321,6 @@ function runFlight() {
   }, 100);
 }
 
-// ইউজার যখনই কানেক্ট করবে, সাথে সাথে সঠিক পজিশন ও হিস্ট্রি পাঠানো হবে
 io.on('connection', async (socket) => {
   console.log('⚡ A user connected to live game:', socket.id);
   
