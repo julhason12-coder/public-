@@ -1,4 +1,4 @@
- const express = require('express');
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mongoose = require('mongoose');
@@ -27,8 +27,12 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// গেম হিস্ট্রি পার্মানেন্ট বা সাময়িকভাবে ধরে রাখার জন্য স্কিমা বা অ্যারে
-const flightHistory = []; // সাম্প্রতিক ক্র্যাশ হিস্ট্রি ধরে রাখার জন্য (সর্বোচ্চ ২০টি)
+// গেম হিস্ট্রি পার্মানেন্ট ডাটাবেস স্কিমা (যাতে অ্যাপ থেকে বের হয়ে আবার ঢুকলেও হিস্ট্রি মুছে না যায়)
+const HistorySchema = new mongoose.Schema({
+  multiplier: { type: Number, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const GameHistory = mongoose.model('GameHistory', HistorySchema);
 
 app.get('/', (req, res) => res.send('Server is Running'));
 
@@ -72,7 +76,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- ২৪ ঘণ্টা সেন্ট্রালাইজড রিয়েল-টাইম এভিয়েটর গেম লুপ ---
+// --- গেম লুপ ভেরিয়েবল ---
 let gameState = "WAITING"; // WAITING, RUNNING, CRASHED
 let multiplier = 1.00;
 let countdown = 5;
@@ -95,17 +99,30 @@ function generateCrashPoint() {
   }
 }
 
-function startAviatorGameLoop() {
+// ডাটাবেস থেকে সাম্প্রতিক হিস্ট্রি ফেচ করার ফাংশন
+async function getRecentHistory() {
+  try {
+    const histories = await GameHistory.find().sort({ createdAt: -1 }).limit(15);
+    return histories.map(h => h.multiplier);
+  } catch (err) {
+    console.error("History fetch error:", err);
+    return [];
+  }
+}
+
+async function startAviatorGameLoop() {
   gameState = "WAITING";
   multiplier = 1.00;
   countdown = 5;
   roundStartTime = Date.now();
 
-  io.emit("game_countdown", { countdown, gameState, history: flightHistory });
+  const history = await getRecentHistory();
+  io.emit("game_countdown", { countdown, gameState, history });
 
-  const countdownInterval = setInterval(() => {
+  const countdownInterval = setInterval(async () => {
     countdown--;
-    io.emit("game_countdown", { countdown, gameState, history: flightHistory });
+    const currentHistory = await getRecentHistory();
+    io.emit("game_countdown", { countdown, gameState, history: currentHistory });
 
     if (countdown <= 0) {
       clearInterval(countdownInterval);
@@ -120,16 +137,14 @@ function runFlight() {
   roundStartTime = Date.now();
   const crashPoint = generateCrashPoint();
   
-  const flightInterval = setInterval(() => {
+  const flightInterval = setInterval(async () => {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
     
-    // আপনার চাহিদা অনুযায়ী স্পিড লজিক: 
-    // ২x এর নিচে একরকম স্পিড থাকবে, ২x পার হওয়ার পর স্পিড ও প্রোগ্রেস আরও স্মুথ ও স্টেপ বাই স্টেপ বাড়বে
-    if (multiplier < 2.00) {
-      multiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
+    // স্মুথ প্রগ্রেসিভ স্পিড লজিক
+    if (elapsedSeconds <= 2) {
+      multiplier = parseFloat((1.00 + (elapsedSeconds * 0.1)).toFixed(2));
     } else {
-      // ২x এর পর প্রোগ্রেসিভলি স্পিড বাড়তে থাকবে
-      multiplier = parseFloat((2.00 + ((elapsedSeconds - 5) * 0.3)).toFixed(2));
+      multiplier = parseFloat((1.20 + ((elapsedSeconds - 2) * 0.25)).toFixed(2));
     }
     
     if (multiplier >= crashPoint) {
@@ -137,11 +152,15 @@ function runFlight() {
       clearInterval(flightInterval);
       gameState = "CRASHED";
 
-      // নতুন ক্র্যাশ পয়েন্ট হিস্ট্রিতে যোগ করা হলো এবং সর্বশেষ ২০টি রাখা হলো
-      flightHistory.unshift(multiplier);
-      if (flightHistory.length > 20) flightHistory.pop();
+      // ডাটাবেসে নতুন ক্র্যাশ পয়েন্ট পার্মানেন্টলি সেভ করা হলো
+      try {
+        await GameHistory.create({ multiplier });
+      } catch (err) {
+        console.error("History save error:", err);
+      }
 
-      io.emit("game_crash", { gameState, multiplier, crashPoint, history: flightHistory });
+      const history = await getRecentHistory();
+      io.emit("game_crash", { gameState, multiplier, crashPoint, history });
 
       setTimeout(() => {
         startAviatorGameLoop();
@@ -149,31 +168,34 @@ function runFlight() {
       return;
     }
 
-    io.emit("game_update", { gameState, multiplier, history: flightHistory });
+    const history = await getRecentHistory();
+    io.emit("game_update", { gameState, multiplier, history });
   }, 100);
 }
 
-// ইউজার যখনই কানেক্ট করবে, তাকে বর্তমান স্টেট ও পুরনো হিস্ট্রি পাঠিয়ে দেওয়া হবে
-io.on('connection', (socket) => {
+// ইউজার যখনই কানেক্ট করবে, সাথে সাথে সঠিক পজিশন ও হিস্ট্রি পাঠানো হবে (যাতে কোনো ডিলে বা ০ থেকে শুরু না হয়)
+io.on('connection', async (socket) => {
   console.log('⚡ A user connected to live game:', socket.id);
   
   let currentMultiplier = 1.00;
   if (gameState === "RUNNING") {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
-    if (multiplier < 2.00) {
-      currentMultiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
+    if (elapsedSeconds <= 2) {
+      currentMultiplier = parseFloat((1.00 + (elapsedSeconds * 0.1)).toFixed(2));
     } else {
-      currentMultiplier = parseFloat((2.00 + ((elapsedSeconds - 5) * 0.3)).toFixed(2));
+      currentMultiplier = parseFloat((1.20 + ((elapsedSeconds - 2) * 0.25)).toFixed(2));
     }
   } else if (gameState === "CRASHED") {
     currentMultiplier = multiplier;
   }
 
+  const history = await getRecentHistory();
+
   socket.emit("sync_game", { 
     gameState, 
     multiplier: currentMultiplier, 
     countdown, 
-    history: flightHistory, // হিস্ট্রি পাঠানো হলো যাতে রিফ্রেশ করলেই দেখতে পায়
+    history, 
     serverTime: Date.now() 
   });
 
