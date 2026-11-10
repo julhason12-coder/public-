@@ -27,7 +27,7 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// গেম হিস্ট্রি পার্মানেন্ট ডাটাবেস স্কিমা (যাতে অ্যাপ থেকে বের হয়ে আবার ঢুকলেও হিস্ট্রি মুছে না যায়)
+// পার্মানেন্ট গেম হিস্ট্রি ডাটাবেস স্কিমা
 const HistorySchema = new mongoose.Schema({
   multiplier: { type: Number, required: true },
   createdAt: { type: Date, default: Date.now }
@@ -35,6 +35,17 @@ const HistorySchema = new mongoose.Schema({
 const GameHistory = mongoose.model('GameHistory', HistorySchema);
 
 app.get('/', (req, res) => res.send('Server is Running'));
+
+// --- হিস্ট্রি এপিআই (যাতে অ্যাপ থেকে ব্যাক দিয়ে আবার ঢুকলে সাথে সাথে হিস্ট্রি পাওয়া যায়) ---
+app.get('/api/history', async (req, res) => {
+  try {
+    const histories = await GameHistory.find().sort({ createdAt: -1 }).limit(15);
+    const historyList = histories.map(h => h.multiplier);
+    res.status(200).json({ success: true, history: historyList });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // রেজিস্ট্রেশন এপিআই
 app.post('/api/register', async (req, res) => {
@@ -82,21 +93,35 @@ let multiplier = 1.00;
 let countdown = 5;
 let roundStartTime = Date.now();
 
-// ক্র্যাশ পয়েন্ট লজিক
+// --- সুনির্দিষ্ট ও এলোমেলো ক্র্যাশ পুল লজিক (Admin Profit Secured) ---
+let crashPool = [];
+
 function generateCrashPoint() {
-  const randomChance = Math.random() * 100;
-  if (randomChance < 0.1) {
-    return parseFloat((Math.random() * (1000.0 - 500.0) + 500.0).toFixed(2)); 
-  } else if (randomChance < 0.6) {
-    return parseFloat((Math.random() * (500.0 - 100.0) + 100.0).toFixed(2));
-  } else {
-    const normalChance = Math.random();
-    if (normalChance < 0.60) {
-      return parseFloat((Math.random() * (2.00 - 1.01) + 1.01).toFixed(2));
-    } else {
-      return parseFloat((Math.random() * (15.00 - 2.00) + 2.00).toFixed(2));
+  if (crashPool.length === 0) {
+    let pool = [];
+    
+    // ১২টি রাউন্ড ১ গুণের (1.00x) মধ্যে ফাটবে (অ্যাডমিনের প্রফিট সিকিউর করতে)
+    for (let i = 0; i < 12; i++) {
+      pool.push(1.00);
     }
+    
+    // বাকি ৮টি রাউন্ড ২ গুণ থেকে ১৫ গুণের (2.00x - 15.00x) মধ্যে থাকবে
+    for (let i = 0; i < 8; i++) {
+      const val = parseFloat((Math.random() * (15.00 - 2.00) + 2.00).toFixed(2));
+      pool.push(val);
+    }
+    
+    // Fisher-Yates Shuffle অ্যালগরিদম দিয়ে সম্পূর্ণ এলোমেলো বা মিক্স করা হলো
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    
+    crashPool = pool;
   }
+  
+  // পুল থেকে একটি করে ক্র্যাশ পয়েন্ট বের করে দেওয়া হবে
+  return crashPool.shift();
 }
 
 // ডাটাবেস থেকে সাম্প্রতিক হিস্ট্রি ফেচ করার ফাংশন
@@ -140,11 +165,14 @@ function runFlight() {
   const flightInterval = setInterval(async () => {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
     
-    // স্মুথ প্রগ্রেসিভ স্পিড লজিক
-    if (elapsedSeconds <= 2) {
-      multiplier = parseFloat((1.00 + (elapsedSeconds * 0.1)).toFixed(2));
+    // স্মুথ স্পিড গ্রোথ
+    if (crashPoint === 1.00) {
+      // যদি ১x ক্র্যাশ হয়, তবে দ্রুত শেষ হবে
+      multiplier = 1.00;
+    } else if (elapsedSeconds <= 2) {
+      multiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
     } else {
-      multiplier = parseFloat((1.20 + ((elapsedSeconds - 2) * 0.25)).toFixed(2));
+      multiplier = parseFloat((1.30 + ((elapsedSeconds - 2) * 0.3)).toFixed(2));
     }
     
     if (multiplier >= crashPoint) {
@@ -173,17 +201,19 @@ function runFlight() {
   }, 100);
 }
 
-// ইউজার যখনই কানেক্ট করবে, সাথে সাথে সঠিক পজিশন ও হিস্ট্রি পাঠানো হবে (যাতে কোনো ডিলে বা ০ থেকে শুরু না হয়)
+// ইউজার যখনই কানেক্ট করবে, সাথে সাথে সঠিক পজিশন ও হিস্ট্রি পাঠানো হবে
 io.on('connection', async (socket) => {
   console.log('⚡ A user connected to live game:', socket.id);
   
   let currentMultiplier = 1.00;
   if (gameState === "RUNNING") {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
-    if (elapsedSeconds <= 2) {
-      currentMultiplier = parseFloat((1.00 + (elapsedSeconds * 0.1)).toFixed(2));
-    } else {
-      currentMultiplier = parseFloat((1.20 + ((elapsedSeconds - 2) * 0.25)).toFixed(2));
+    if (multiplier > 1.00) {
+      if (elapsedSeconds <= 2) {
+        currentMultiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
+      } else {
+        currentMultiplier = parseFloat((1.30 + ((elapsedSeconds - 2) * 0.3)).toFixed(2));
+      }
     }
   } else if (gameState === "CRASHED") {
     currentMultiplier = multiplier;
