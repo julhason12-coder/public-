@@ -7,10 +7,10 @@ app.use(express.json());
 const MONGO_URI = "mongodb+srv://julhason12_db_user:UFyCegiLkcrT2C@cluster0.gwyx0rm.mongodb.net/?retryWrites=true&w=majority";
 
 mongoose.connect(MONGO_URI)
-.then(() => console.log("✅ MongoDB Database Connected Successfully!"))
-.catch(err => console.log("❌ Database Connection Failed: ", err));
+.then(() => console.log("✅ MongoDB Connected Successfully!"))
+.catch(err => console.log("❌ DB Connection Failed: ", err));
 
-// ইউজার ও সেটিংস স্কিমা
+// ডাটাবেজ স্কিমা
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
     password: { type: String, required: true },
@@ -32,11 +32,12 @@ const settingsSchema = new mongoose.Schema({
 });
 const Settings = mongoose.model('Settings', settingsSchema);
 
+// বেস রুট
 app.get('/', (req, res) => {
-    res.send("Game Server is Running Perfectly!");
+    res.send("Game Backend Server is Running Perfectly!");
 });
 
-// রেজিস্ট্রেশন
+// ১. রেজিস্ট্রেশন (১০ টাকা বোনাস)
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -46,13 +47,13 @@ app.post('/api/register', async (req, res) => {
         }
         const newUser = new User({ username, password });
         await newUser.save();
-        res.status(201).json({ success: true, message: "Registration successful!" });
+        res.status(201).json({ success: true, message: "Registration successful! 10 BDT added." });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// লগইন
+// ২. লগইন
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -66,7 +67,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// উত্তোলনের পাসওয়ার্ড সেট
+// ৩. উত্তোলনের আলাদা পাসওয়ার্ড সেট করা
 app.post('/api/user/set-withdrawal-password', async (req, res) => {
     try {
         const { username, withdrawalPassword } = req.body;
@@ -77,52 +78,58 @@ app.post('/api/user/set-withdrawal-password', async (req, res) => {
     }
 });
 
-// ডিপোজিট
+// ৪. ডিপোজিট ও টার্নওভার আপডেট
 app.post('/api/user/deposit', async (req, res) => {
     try {
         const { username, amount } = req.body;
         const user = await User.findOne({ username });
         if (!user) return res.status(400).json({ success: false, message: "User not found!" });
 
-        user.balance += Number(amount);
-        user.totalDeposited += Number(amount);
-        user.turnoverRequired += Number(amount);
+        const numAmount = Number(amount);
+        user.balance += numAmount;
+        user.totalDeposited += numAmount;
+        user.turnoverRequired += numAmount; // সমপরিমাণ টার্নওভার যুক্ত হলো
         await user.save();
+
         res.status(200).json({ success: true, message: "Deposit successful!" });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// উত্তোলন
+// ৫. উত্তোলন শর্ত ও সিকিউরিটি চেক
 app.post('/api/user/withdraw', async (req, res) => {
     try {
         const { username, amount, withdrawalPassword } = req.body;
         const user = await User.findOne({ username });
         if (!user) return res.status(400).json({ success: false, message: "User not found!" });
 
+        // পাসওয়ার্ড চেক
         if (!user.withdrawalPassword || user.withdrawalPassword !== withdrawalPassword) {
             return res.status(400).json({ success: false, message: "সঠিক উত্তোলন পাসওয়ার্ড দিন!" });
         }
+        // ডিপোজিট শর্ত চেক (কমপক্ষে ১০০ টাকা)
         if (user.totalDeposited < 100) {
-            return res.status(400).json({ success: false, message: "আগে ১০০ থেকে ৫০০ টাকা ডিপোজিট করুন।" });
+            return res.status(400).json({ success: false, message: "আগে আপনি ১০০ থেকে ৫০০ টাকা ডিপোজিট করুন, তারপর সম্পূর্ণ টাকা উত্তোলন করুন।" });
         }
+        // টার্নওভার শর্ত চেক
         if (user.turnoverCompleted < user.turnoverRequired) {
-            return res.status(400).json({ success: false, message: "টার্নওভার শর্ত পূরণ হয়নি!" });
+            return res.status(400).json({ success: false, message: `টার্নওভার শর্ত পূরণ হয়নি! প্রয়োজন: ${user.turnoverRequired}, সম্পন্ন: ${user.turnoverCompleted}` });
         }
-        if (user.balance < amount) {
+        // ব্যালেন্স চেক
+        if (user.balance < Number(amount)) {
             return res.status(400).json({ success: false, message: "অপর্যাপ্ত ব্যালেন্স!" });
         }
 
         user.balance -= Number(amount);
         await user.save();
-        res.status(200).json({ success: true, message: "Withdrawal successful!" });
+        res.status(200).json({ success: true, message: "Withdrawal request submitted successfully!" });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// অ্যাডমিন সেটিংস
+// ৬. অ্যাডমিন প্যানেল সেটিংস
 app.get('/api/admin/settings', async (req, res) => {
     let settings = await Settings.findOne({ key: "global_settings" });
     if (!settings) settings = await Settings.create({ key: "global_settings" });
@@ -137,20 +144,46 @@ app.post('/api/admin/update-settings', async (req, res) => {
         if (depositNumber) settings.depositNumber = depositNumber;
         if (withdrawalNumber) settings.withdrawalNumber = withdrawalNumber;
         await settings.save();
-        res.status(200).json({ success: true, message: "Settings updated!" });
+        res.status(200).json({ success: true, message: "Settings updated successfully!" });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// ২৪ ঘণ্টা অটো গেম ইঞ্জিন
-setInterval(() => {
+// ৭. ২৪ ঘণ্টা লাইভ গেম ও অটো এভিয়েটর ইঞ্জিন (৬০% প্রফিট + ৫০০০x জ্যাকপট)
+let specialJackpotCountToday = 0;
+let lastResetDate = new Date().toDateString();
+
+function runGameEngine(gameName) {
+    const currentDate = new Date().toDateString();
+    if (currentDate !== lastResetDate) {
+        specialJackpotCountToday = 0;
+        lastResetDate = currentDate;
+    }
+
     const totalBet = Math.floor(Math.random() * 100000) + 10000;
-    const multiplier = totalBet > 80000 ? (Math.random() * 0.5 + 1).toFixed(2) : (Math.random() * 8 + 2).toFixed(2);
-    console.log(`[Auto Game] Bet: ${totalBet} | Crash: ${multiplier}x`);
+    let multiplier = 1.00;
+
+    if (specialJackpotCountToday < 2 && Math.random() < 0.05 && totalBet < 80000) {
+        multiplier = (Math.random() * 4999 + 1).toFixed(2);
+        specialJackpotCountToday++;
+        console.log(`🔥 [JACKPOT ${gameName}] #${specialJackpotCountToday} Hit: ${multiplier}x`);
+    } else if (totalBet > 80000) {
+        multiplier = (Math.random() * 0.5 + 1).toFixed(2); // সেফ ক্র্যাশ
+    } else {
+        multiplier = (Math.random() * 8 + 2).toFixed(2);
+    }
+
+    const companyProfit = totalBet * 0.60;
+    console.log(`[Live Engine - ${gameName}] Total Bet: ${totalBet} | Crash: ${multiplier}x | Company Profit (60%): ${companyProfit.toFixed(2)}`);
+}
+
+// ব্যাকগ্রাউন্ডে ২৪ ঘণ্টা গেম চলতে থাকবে (ভবিষ্যতের অন্য এভিয়েটর গেমেও এই ইঞ্জিন ব্যবহার করতে পারবেন)
+setInterval(() => {
+    runGameEngine("Aviator-Classic");
 }, 15000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🚀 Clean Server running on port ${PORT}`);
 });
