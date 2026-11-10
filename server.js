@@ -93,25 +93,25 @@ let multiplier = 1.00;
 let countdown = 5;
 let roundStartTime = Date.now();
 
-// --- সুনির্দিষ্ট ও এলোমেলো ক্র্যাশ পুল লজিক (Admin Profit Secured) ---
+// --- নিখুঁত শাফলিং লজিক (১২টি ১x এবং ৮টি ২x-১৫x মিক্সড) ---
 let crashPool = [];
 
 function generateCrashPoint() {
   if (crashPool.length === 0) {
     let pool = [];
     
-    // ১২টি রাউন্ড ১ গুণের (1.00x) মধ্যে ফাটবে (অ্যাডমিনের প্রফিট সিকিউর করতে)
+    // ঠিক ১২টি রাউন্ড একদম ১.০০x (এক গুণের মধ্যে) ফাটবে
     for (let i = 0; i < 12; i++) {
       pool.push(1.00);
     }
     
-    // বাকি ৮টি রাউন্ড ২ গুণ থেকে ১৫ গুণের (2.00x - 15.00x) মধ্যে থাকবে
+    // বাকি ৮টি রাউন্ড ২x থেকে ১৫x এর মধ্যে এলোমেলোভাবে থাকবে
     for (let i = 0; i < 8; i++) {
       const val = parseFloat((Math.random() * (15.00 - 2.00) + 2.00).toFixed(2));
       pool.push(val);
     }
     
-    // Fisher-Yates Shuffle অ্যালগরিদম দিয়ে সম্পূর্ণ এলোমেলো বা মিক্স করা হলো
+    // Fisher-Yates Shuffle দিয়ে সম্পূর্ণ এলোমেলো করা হলো যাতে কোনো প্যাটার্ন বোঝা না যায়
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -120,7 +120,6 @@ function generateCrashPoint() {
     crashPool = pool;
   }
   
-  // পুল থেকে একটি করে ক্র্যাশ পয়েন্ট বের করে দেওয়া হবে
   return crashPool.shift();
 }
 
@@ -165,14 +164,16 @@ function runFlight() {
   const flightInterval = setInterval(async () => {
     const elapsedSeconds = (Date.now() - roundStartTime) / 1000;
     
-    // স্মুথ স্পিড গ্রোথ
+    // যদি ক্র্যাশ পয়েন্ট ১.০০x হয়, তবে বিমান শুরু হতেই সাথে সাথে ফাটবে
     if (crashPoint === 1.00) {
-      // যদি ১x ক্র্যাশ হয়, তবে দ্রুত শেষ হবে
       multiplier = 1.00;
-    } else if (elapsedSeconds <= 2) {
-      multiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
     } else {
-      multiplier = parseFloat((1.30 + ((elapsedSeconds - 2) * 0.3)).toFixed(2));
+      // অন্যথায় স্বাভাবিক ও স্মুথ গতিতে উপরে উঠতে থাকবে
+      if (elapsedSeconds <= 2) {
+        multiplier = parseFloat((1.00 + (elapsedSeconds * 0.15)).toFixed(2));
+      } else {
+        multiplier = parseFloat((1.30 + ((elapsedSeconds - 2) * 0.3)).toFixed(2));
+      }
     }
     
     if (multiplier >= crashPoint) {
