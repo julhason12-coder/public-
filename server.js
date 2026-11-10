@@ -167,5 +167,6 @@ io.on('connection', (socket) => {
 // গেম লুপ চালু করা হলো
 startAviatorGameLoop();
 
-const PORT = process.env.PORT || 3000;
+// Render-এর ডায়নামিক পোর্ট নেওয়ার জন্য process.env.PORT ব্যবহার করা হয়েছে
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
