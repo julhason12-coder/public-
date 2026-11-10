@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json());
 
-// আপনার MongoDB কানেকশন লিংক
+// আপনার আসল MongoDB কানেকশন লিংক (ইউজারনেম ও পাসওয়ার্ড সহ)
 const MONGO_URI = "mongodb+srv://julhason12_db_user:UFyCegiLkcrT2C@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority";
 
 mongoose.connect(MONGO_URI)
@@ -67,7 +67,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // ==========================================
-// ৩. ইউজার লগইন (সংশোধিত ও এরর মুক্ত)
+// ৩. ইউজার লগইন
 // ==========================================
 app.post('/api/login', async (req, res) => {
     try {
@@ -78,7 +78,6 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ success: false, message: "Invalid username or password!" });
         }
 
-        // অ্যাপের সুবিধার জন্য ইউজার ডাটা সফলভাবে রিটার্ন করা হচ্ছে
         res.status(200).json({ 
             success: true, 
             message: "Login successful", 
@@ -246,4 +245,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
 });
-
