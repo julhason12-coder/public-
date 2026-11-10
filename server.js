@@ -4,8 +4,8 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json());
 
-// ⚠️ আপনার আসল MongoDB কানেকশন লিংকটি এখানে বসাবেন
-const MONGO_URI = "mongodb+srv://julhason12_db_user:UFyCegiLkcrT2C@cluster0.gwyx0rm.mongodb.net/?retryWrites=true&w=majority";
+
+const MONGO_URI = "mongodb+srv://julhason12_db_user:<db_password>@cluster0.gywx0rw.mongodb.net/
 
 mongoose.connect(MONGO_URI)
 .then(() => console.log("✅ MongoDB Connected Successfully!"))
