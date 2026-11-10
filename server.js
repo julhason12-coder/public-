@@ -26,8 +26,8 @@ const UserSchema = new mongoose.Schema({
   password: { type: String, required: true },
   balance: { type: Number, default: 10 }, // নতুনদের ১০ টাকা ফ্রি বোনাস
   totalDeposited: { type: Number, default: 0 },
-  turnoverRequired: { type: Number, default: 0 },
-  turnoverProgress: { type: Number, default: 0 },
+  turnoverRequired: { type: Number, default: 0 }, // মোট কত টাকার বাজি ধরতে হবে
+  turnoverProgress: { type: Number, default: 0 }, // ইতোমধ্যে কত টাকার বাজি খেলা হয়েছে
   withdrawPassword: { type: String, default: null }
 });
 const User = mongoose.model('User', UserSchema);
@@ -51,21 +51,23 @@ const GameHistory = mongoose.model('GameHistory', HistorySchema);
 
 app.get('/', (req, res) => res.send('Server is Running'));
 
-// --- ইউজার ব্যালেন্স ও ট্রানজেকশন এপিআই ---
-
-// প্রোফাইল ও ব্যালেন্স চেক
+// --- ইউজার ব্যালেন্স ও টার্নওভার প্রোফাইল এপিআই ---
 app.post('/api/profile', async (req, res) => {
   try {
     const { username } = req.body;
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ success: false, message: "User not found!" });
     
+    // টার্নওভার কত বাকি আছে হিসাব করা
+    const remainingTurnover = Math.max(0, user.turnoverRequired - user.turnoverProgress);
+
     res.status(200).json({
       success: true,
       balance: user.balance,
       totalDeposited: user.totalDeposited,
       turnoverRequired: user.turnoverRequired,
       turnoverProgress: user.turnoverProgress,
+      remainingTurnover: remainingTurnover, // লাইভ দেখার জন্য বাকি টার্নওভার
       hasWithdrawPassword: !!user.withdrawPassword
     });
   } catch (err) {
@@ -87,12 +89,50 @@ app.post('/api/deposit', async (req, res) => {
 
     user.balance += depositAmount;
     user.totalDeposited += depositAmount;
-    user.turnoverRequired += depositAmount; 
+    user.turnoverRequired += depositAmount; // জমার সমপরিমাণ টার্নওভার যোগ হলো
     await user.save();
 
     await Transaction.create({ username, type: 'DEPOSIT', amount: depositAmount });
 
     res.status(200).json({ success: true, message: "Deposit successful!", balance: user.balance });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- গেম খেলার সময় টার্নওভার আপডেট করার নতুন এপিআই ---
+app.post('/api/place-bet', async (req, res) => {
+  try {
+    const { username, betAmount } = req.body;
+    const amount = parseFloat(betAmount);
+
+    if (!username || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid bet!" });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ success: false, message: "User not found!" });
+
+    if (user.balance < amount) {
+      return res.status(400).json({ success: false, message: "Insufficient balance!" });
+    }
+
+    // বাজি ধরার ফলে ব্যালেন্স কাটবে এবং টার্নওভার প্রোগ্রেস বাড়াবে
+    user.balance -= amount;
+    user.turnoverProgress += amount; // যত টাকার গেম খেলবে, টার্নওভার তত যোগ হতে থাকবে
+    await user.save();
+
+    await Transaction.create({ username, type: 'BET', amount });
+
+    const remainingTurnover = Math.max(0, user.turnoverRequired - user.turnoverProgress);
+
+    res.status(200).json({ 
+      success: true, 
+      balance: user.balance, 
+      turnoverProgress: user.turnoverProgress,
+      remainingTurnover: remainingTurnover,
+      message: "Bet placed successfully!" 
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -145,9 +185,10 @@ app.post('/api/withdraw', async (req, res) => {
     }
 
     if (user.turnoverProgress < user.turnoverRequired) {
+      const remaining = user.turnoverRequired - user.turnoverProgress;
       return res.status(400).json({ 
         success: false, 
-        message: "টার্নওভার বাকি আছে! রিকোয়েয়ারমেন্ট সম্পূর্ণ করে উত্তোলন করুন।" 
+        message: `টার্নওভার বাকি আছে! উত্তোলন করতে আরও ${remaining} টাকার গেম খেলতে হবে।` 
       });
     }
 
@@ -197,7 +238,15 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: "User already exists!" });
     }
 
-    const newUser = new User({ username, password, balance: 10, totalDeposited: 0 });
+    // ফ্রি ১০ টাকা বোনাসের জন্য টার্নওভার রিকোয়ারমেন্ট ১০ টাকা সেট করা হলো
+    const newUser = new User({ 
+      username, 
+      password, 
+      balance: 10, 
+      totalDeposited: 0, 
+      turnoverRequired: 10, 
+      turnoverProgress: 0 
+    });
     await newUser.save();
     
     await Transaction.create({ username, type: 'BONUS', amount: 10 });
